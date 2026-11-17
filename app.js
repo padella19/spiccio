@@ -110,6 +110,7 @@
       : `<button class="iconbtn" data-act="settings" aria-label="Impostazioni">${ic("gear", 20)}${L.token ? `<span class="dot ${syncCls}"></span>` : ""}</button>`;
     app.innerHTML = `
       <header class="top">${left}<h1>${esc(title)}</h1>
+        <a class="iconbtn" href="dashboard.html" aria-label="Apri la dashboard">${ic("chart", 19)}</a>
         <button class="iconbtn" data-act="hide" aria-label="${L.nascondi ? "Mostra importi" : "Nascondi importi"}">${ic(L.nascondi ? "eyeOff" : "eye", 19)}</button>
       </header>
       <main class="view" id="view">${body}</main>

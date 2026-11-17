@@ -1,7 +1,7 @@
 // Service worker di Spiccio: funziona offline e mostra i promemoria push.
-const VERSIONE = "spiccio-v1";
-const FILE = ["./", "./index.html", "./styles.css", "./icons.js", "./core.js", "./app.js", "./manifest.webmanifest",
-  "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png"];
+const VERSIONE = "spiccio-v2";
+const FILE = ["./", "./index.html", "./styles.css", "./icons.js", "./core.js", "./app.js", "./manifest.webmanifest", "./dashboard.html",
+  "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(VERSIONE).then(c => c.addAll(FILE)).then(() => self.skipWaiting()));
@@ -22,7 +22,7 @@ self.addEventListener("push", e => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch (err) { d = { title: "Spiccio", body: e.data ? e.data.text() : "" }; }
   e.waitUntil(self.registration.showNotification(d.title || "Spiccio", {
-    body: d.body || "Hai un promemoria.", tag: d.id || undefined, icon: "icons/icon-192.png", badge: "icons/icon-192.png",
+    body: d.body || "Hai un promemoria.", tag: d.id || undefined, icon: "icon-192.png", badge: "icon-192.png",
     data: { url: "./" + (d.view && d.view !== "home" ? "?v=" + d.view : "") },
   }));
 });
