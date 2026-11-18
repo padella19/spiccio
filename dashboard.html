@@ -1361,7 +1361,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       if (r.tipo === "abbinata") { usate.add(r.spesa.id); out.push({ d, imp, tipo: "uscita", cat: r.spesa.cat, sub: r.spesa.sub, nome: r.spesa.nota || nome }); continue; }
       if (r.tipo === "fissa") { out.push({ d, imp, tipo: "uscita", cat: "_fisse", sub: r.fissa.nome, nome: r.fissa.nome }); continue; }
       if (r.tipo === "commissione") { out.push({ d, imp, tipo: "uscita", cat: "_banca", sub: nome, nome }); continue; }
-      if (r.tipo === "carta") { if (d < primo) out.push({ d, imp, tipo: "uscita", cat: "_carta", nome: "Saldo carta di credito" }); continue; }
+      if (r.tipo === "carta") { out.push({ d, imp, tipo: "uscita", cat: "_carta", nome: "Saldo carta di credito" }); continue; }
       if (r.tipo === "giroconto") {
         if (RX_RISP.test(m.desc)) out.push({ d, imp, tipo: "risparmio", nome });
         else if (RX_REVOLUT.test(m.desc) && d < primo) out.push({ d, imp, tipo: "uscita", cat: "_revolut", nome: /satispay/i.test(m.desc) ? "Ricarica Satispay" : "Ricarica Revolut" });
