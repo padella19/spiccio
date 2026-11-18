@@ -1393,6 +1393,12 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     const set = new Set(sel);
     return { mesi, sel, voci: fl.voci.filter(v => set.has(ym(v.d))) };
   }
+  function mesiEffettivi(voci, sel) {
+    if (!voci.length || !sel.length) return Math.max(1, sel.length);
+    const [y0, m0] = sel[0].split("-").map(Number), [y1, m1] = sel.at(-1).split("-").map(Number);
+    const ini = Math.max(+new Date(y0, m0 - 1, 1), +voci[0].d), fin = Math.min(+new Date(y1, m1, 0, 23), +voci.at(-1).d);
+    return Math.max(.5, ((fin - ini) / 864e5 + 1) / 30.44);
+  }
   const sommaT = (voci, tipo) => somma(voci.filter(v => v.tipo === tipo), v => v.imp);
   function perCat(voci) {
     const o = {};
@@ -1408,7 +1414,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
         <div class="li"><span class="av acc">${ic("tag", 18)}</span><div class="tx"><div class="t1">Sistema le categorie per esercente</div><div class="t2">una scelta vale per tutti i movimenti di quell'esercente, e Spiccio la ricorda</div></div></div>
         <div style="margin-top:16px"><button class="btn pri" data-act="carica">${ic("upload", 16)} Carica estratti conto</button></div>
       </section></div>`;
-    const fl = flusso(), R = rangeAnni(fl), V = R.voci, nM = R.sel.length || 1;
+    const fl = flusso(), R = rangeAnni(fl), V = R.voci, nM = mesiEffettivi(V, R.sel);
     const ent = sommaT(V, "entrata"), usc = sommaT(V, "uscita"), risp = ent - usc, tasso = ent > 0 ? risp / ent : 0;
     const anni = [...new Set(R.mesi.map(k => k.slice(0, 4)))];
     const dalAl = R.sel.length ? `${MESI[+R.sel[0].slice(5) - 1].slice(0, 3)} ${R.sel[0].slice(0, 4)} – ${MESI[+R.sel.at(-1).slice(5) - 1].slice(0, 3)} ${R.sel.at(-1).slice(0, 4)}` : "—";
@@ -1416,7 +1422,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       ["Entrate", M0(ent), `${M0(ent / nM)} al mese in media`, ""],
       ["Uscite", M0(usc), `${M0(usc / nM)} al mese in media`, ""],
       [risp >= 0 ? "Risparmiato" : "Speso più di quanto entrato", M0(Math.abs(risp)), `${Math.round(tasso * 100)}% delle entrate`, risp >= 0 ? "pos" : "neg"],
-      ["Periodo", plural(nM, "mese", "mesi"), dalAl, ""],
+      ["Periodo", nM >= 11.5 ? plural(Math.round(nM / 12 * 10) / 10, "anno", "anni").replace(".", ",") : plural(Math.round(nM), "mese", "mesi"), dalAl, ""],
     ].map(([k, v, s, c]) => `<section class="card tilt kpi s3 pad-s ${anim()}"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="s">${s}</div></section>`).join("");
 
     const cats = perCat(V), totU = somma(cats, x => x.tot) || 1, nocat = cats.find(x => x.cat === "_nocat");
@@ -1489,12 +1495,12 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
   function suggerimenti(fl, R) {
     const out = [], mesi = R.mesi, l12 = new Set(mesi.slice(-12)), p12 = new Set(mesi.slice(-24, -12));
     const V12 = fl.voci.filter(v => l12.has(ym(v.d))), P12 = fl.voci.filter(v => p12.has(ym(v.d)));
-    const n12 = l12.size || 1, np = p12.size;
+    const n12 = mesiEffettivi(V12, [...l12]), np = p12.size;
     const e12 = sommaT(V12, "entrata"), u12 = sommaT(V12, "uscita"), r12 = e12 - u12, t12 = e12 > 0 ? r12 / e12 : 0;
     const anno = x => x / n12 * 12;
     // 1. tasso di risparmio
-    if (e12 > 0) out.push(t12 >= .2 ? { icon: "star", bg: "var(--ok-soft)", col: "var(--ok)", imp: 1e9, t: `Risparmi il ${Math.round(t12 * 100)}% di quello che entra`, s: `Negli ultimi ${n12} mesi ti sono rimasti ${M0(r12)}. Sopra il 20% è un ottimo ritmo: il passo dopo è far lavorare quei soldi.` }
-      : t12 >= 0 ? { icon: "target", bg: "var(--warn-soft)", col: "var(--warn)", imp: 1e9, t: `Risparmi il ${Math.round(t12 * 100)}% delle entrate`, s: `Negli ultimi ${n12} mesi ti sono rimasti ${M0(r12)}. Arrivare al 20% vorrebbe dire ${M0(anno(e12 * .2 - r12) / 12)} in più ogni mese.` }
+    if (e12 > 0) out.push(t12 >= .2 ? { icon: "star", bg: "var(--ok-soft)", col: "var(--ok)", imp: 1e9, t: `Risparmi il ${Math.round(t12 * 100)}% di quello che entra`, s: `Negli ultimi ${Math.round(n12)} mesi ti sono rimasti ${M0(r12)}. Sopra il 20% è un ottimo ritmo: il passo dopo è far lavorare quei soldi.` }
+      : t12 >= 0 ? { icon: "target", bg: "var(--warn-soft)", col: "var(--warn)", imp: 1e9, t: `Risparmi il ${Math.round(t12 * 100)}% delle entrate`, s: `Negli ultimi ${Math.round(n12)} mesi ti sono rimasti ${M0(r12)}. Arrivare al 20% vorrebbe dire ${M0(anno(e12 * .2 - r12) / 12)} in più ogni mese.` }
       : { icon: "flame", bg: "var(--bad-soft)", col: "var(--bad)", imp: 1e9, t: "Negli ultimi 12 mesi è uscito più di quanto è entrato", s: `Mancano ${M0(-r12)}. Le categorie qui sotto dicono da dove partire.` });
     // 2. spese che crescono più delle entrate
     if (np >= 10) {
