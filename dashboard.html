@@ -508,6 +508,11 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     const w = nome.toLowerCase().replace(/\(.*?\)/g, "").split(/[^a-zà-ù0-9]+/).filter(x => x.length >= 4 && !STOP.has(x));
     return w.some(x => a.includes(" " + x + " ") || a.includes(" " + x));
   }
+  // Se ho i movimenti della carta di credito, l'addebito mensile sul conto non va contato di nuovo.
+  function cartaCoperta(d) {
+    const da = +d - 45 * 864e5;
+    return E.mov.some(x => x.cc && x.importo < 0 && +new Date(x.data) >= da && +new Date(x.data) <= +d);
+  }
   // Abbina ogni movimento della banca a quello che c'è in Spiccio.
   let _abb = null, _abbKey = "";
   function abbina() {
@@ -521,7 +526,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     for (const m of movs) {
       const d = new Date(m.data), imp = Math.abs(m.importo);
       if (m.stato === "ignorato") { out.set(m.id, { tipo: "ignorato" }); continue; }
-      if (m.importo > 0) { out.set(m.id, { tipo: RX_GIRO.test(m.desc) || mio(m.desc) ? "giroconto" : "entrata" }); continue; }
+      if (m.importo > 0) { out.set(m.id, { tipo: m.cc || RX_GIRO.test(m.desc) || mio(m.desc) ? "giroconto" : "entrata" }); continue; }
       const esplicita = perDaEstratto.get(m.id);
       if (esplicita) { usate.add(esplicita.id); out.set(m.id, { tipo: "abbinata", spesa: esplicita }); continue; }
       let best = null, bd = 99;
@@ -533,11 +538,12 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       }
       if (best) { usate.add(best.id); out.set(m.id, { tipo: "abbinata", spesa: best }); continue; }
       if (RX_COMM.test(m.desc)) { out.set(m.id, { tipo: "commissione" }); continue; }
-      if (RX_SALDOCARTA.test(m.desc)) { out.set(m.id, { tipo: "carta" }); continue; }
+      if (RX_SALDOCARTA.test(m.desc)) { out.set(m.id, { tipo: "carta", coperto: cartaCoperta(d) }); continue; }
       const fissa = S.fisse.find(f => (somiglia(m.desc, f.nome) && (f.variabile || Math.abs(f.importo - imp) <= f.importo * .3)) || (imp >= 50 && Math.abs(f.importo - imp) <= Math.max(.02, f.importo * .01) && Math.abs(d.getDate() - f.giorno) <= 3));
       if (fissa) { out.set(m.id, { tipo: "fissa", fissa }); continue; }
       const ann = S.annualiDef.find(a => (somiglia(m.desc, a.nome) && Math.abs(a.importo - imp) <= a.importo * .15) || ((a.mesi || []).includes(d.getMonth() + 1) && Math.abs(a.importo - imp) <= Math.max(.02, a.importo * .01)));
       if (ann) { out.set(m.id, { tipo: "fissa", fissa: ann }); continue; }
+      if (m.cc) { out.set(m.id, { tipo: d < inizio ? "prima" : "cartaMov" }); continue; }
       if (RX_GIRO.test(m.desc) || mio(m.desc)) { out.set(m.id, { tipo: "giroconto" }); continue; }
       if (d < inizio) { out.set(m.id, { tipo: "prima" }); continue; }
       out.set(m.id, { tipo: "mancante" });
@@ -553,7 +559,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     return out;
   }
   function riepilogoE() {
-    const a = abbina(); const c = { mancante: [], doppione: [], abbinata: [], fissa: [], entrata: [], giroconto: [], commissione: [], carta: [], ignorato: [], prima: [] };
+    const a = abbina(); const c = { mancante: [], doppione: [], abbinata: [], fissa: [], entrata: [], giroconto: [], commissione: [], carta: [], cartaMov: [], ignorato: [], prima: [] };
     for (const m of E.mov) { const r = a.get(m.id); if (!r) continue; c[r.tipo]?.push(m); if (r.doppione) c.doppione.push(m); }
     return c;
   }
@@ -696,12 +702,15 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     const ricordo = (E.mappe || {})[firma];
     if (ricordo) map = { ...map, ...ricordo.map };
     const conti = Object.keys(E.conti);
-    const nomeDaFile = ricordo?.conto || (/revolut/i.test(file.name) || rows[map.header].some(c => /started date/i.test(c)) ? "Revolut" : /mediobanca|chebanca/i.test(file.name) ? "Mediobanca Premier" : (conti[0] || ""));
+    const pos = righeMovimenti(rows, map, "x"), quotaPos = pos.length ? pos.filter(m => m.importo > 0).length / pos.length : 0;
+    const pareCarta = ricordo?.carta ?? (/carta|credit|amex|american|visa|mastercard|nexi/i.test(file.name) || rows.slice(0, map.header + 1).some(r => r.some(c => /carta di credito|credit card/i.test(String(c)))) || quotaPos > .7);
+    const nomeDaFile = ricordo?.conto || (pareCarta ? "Carta di credito" : null) || (/revolut/i.test(file.name) || rows[map.header].some(c => /started date/i.test(c)) ? "Revolut" : /mediobanca|chebanca/i.test(file.name) ? "Mediobanca Premier" : (Object.entries(E.conti).find(([, c]) => !c.carta)?.[0] || ""));
     const hdr = rows[map.header].map(c => String(c).trim());
     const opt = (sel) => `<option value="-1">—</option>` + hdr.map((h, i) => `<option value="${i}"${i === sel ? " selected" : ""}>${esc(h || "colonna " + (i + 1))}</option>`).join("");
     const body = `<p class="note" style="margin-top:0">Ho letto <b>${esc(file.name)}</b>. Controlla che le colonne siano giuste: lo chiedo solo la prima volta per ogni banca.</p>
       <div class="fgrid" style="margin-top:14px">
         <div class="fld w"><label>Il tuo nome come compare negli estratti</label><input class="inp" id="i-nome" value="${esc((E.nomi || [])[0] || indovinaNome(rows) || "")}" placeholder="es. ROSSI MARIO"><span class="note" style="margin:2px 0 0">Serve a riconoscere i bonifici tra i tuoi conti, che non sono né entrate né spese.</span></div>
+        <label class="w" style="display:flex;gap:10px;align-items:flex-start;background:var(--soft);border-radius:12px;padding:10px 12px;cursor:pointer"><input type="checkbox" id="i-carta" ${pareCarta ? "checked" : ""} style="width:18px;height:18px;accent-color:var(--acc);margin-top:2px"><span><b>È l'estratto di una carta di credito</b><br><span class="mut" style="font-size:12.5px">Così l'addebito mensile della carta sul conto non viene contato due volte.</span></span></label>
         <div class="fld w"><label>Conto o carta</label><input class="inp" id="i-conto" list="i-conti" value="${esc(nomeDaFile)}" placeholder="es. Conto principale, Revolut, Amex…"><datalist id="i-conti">${conti.map(c => `<option value="${esc(c)}">`).join("")}</datalist></div>
         <div class="fld"><label>Data</label><select class="inp" id="i-data">${opt(map.data)}</select></div>
         <div class="fld"><label>Descrizione</label><select class="inp" id="i-desc">${opt(map.desc)}</select></div>
@@ -713,25 +722,27 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       </div>
       <div id="i-prev" style="margin-top:16px"></div>`;
     return new Promise(fine => modal("Carica estratto conto · " + file.name, body, `<span class="sp"></span><button class="btn" data-x>Annulla</button><button class="btn pri" id="i-ok">Importa</button>`, (ov, close) => {
+      const segno = mv => { const qp = mv.length ? mv.filter(m => m.importo > 0).length / mv.length : 0; return $("#i-carta", ov).checked && qp > .6 ? mv.map(m => ({ ...m, importo: -m.importo })) : mv; };
       const leggi = () => ({ ...map, data: +$("#i-data", ov).value, desc: +$("#i-desc", ov).value, desc2: +$("#i-desc2", ov).value, imp: +$("#i-imp", ov).value, fee: +$("#i-fee", ov).value, dare: +$("#i-dare", ov).value, avere: +$("#i-avere", ov).value });
       const prev = () => {
-        const mm = leggi(), mv = righeMovimenti(rows, mm, "x");
+        const mm = leggi(), mv = segno(righeMovimenti(rows, mm, "x"));
         $("#i-prev", ov).innerHTML = mv.length ? `<div class="kv"><span class="k">Movimenti trovati</span><span class="v">${mv.length} · dal ${dDay(new Date(mv.reduce((a, m) => m.data < a ? m.data : a, mv[0].data)))} al ${dDay(new Date(mv.reduce((a, m) => m.data > a ? m.data : a, mv[0].data)))}</span></div>` +
           mv.slice(0, 5).map(m => `<div class="kv"><span class="k">${dDay(new Date(m.data))} · ${esc(pulisci(m.desc))}</span><span class="v ${m.importo > 0 ? "pos" : ""}">${m.importo > 0 ? "+" : ""}${eur(m.importo)}</span></div>`).join("")
           : `<p class="note neg">Con queste colonne non trovo movimenti: controlla data e importo.</p>`;
         $("#i-ok", ov).disabled = !mv.length;
       };
-      $$("select", ov).forEach(s => s.onchange = prev); prev();
+      $$("select", ov).forEach(s => s.onchange = prev); $("#i-carta", ov).onchange = prev; prev();
       $("#i-ok", ov).onclick = () => {
         const conto = $("#i-conto", ov).value.trim() || "Conto";
-        const mv = righeMovimenti(rows, leggi(), conto);
+        const carta = $("#i-carta", ov).checked;
+        const mv = segno(righeMovimenti(rows, leggi(), conto)).map(m => carta ? { ...m, cc: true, id: m.id.replace(/^bk_/, "cc_") } : m);
         const ids = new Set(E.mov.map(m => m.id));
         const nuovi = mv.filter(m => !ids.has(m.id));
         E.mov.push(...nuovi);
         const ultima = mv.reduce((a, m) => m.data > a ? m.data : a, "");
         const nome = $("#i-nome", ov).value.trim().toUpperCase(); if (nome) E.nomi = [nome];
-        E.mappe = E.mappe || {}; const mm = leggi(); E.mappe[firma] = { conto, map: { data: mm.data, desc: mm.desc, desc2: mm.desc2, imp: mm.imp, fee: mm.fee, dare: mm.dare, avere: mm.avere } };
-        E.conti[conto] = { ultimo: ultima > (E.conti[conto]?.ultimo || "") ? ultima : E.conti[conto]?.ultimo, file: file.name, il: new Date().toISOString() };
+        E.mappe = E.mappe || {}; const mm = leggi(); E.mappe[firma] = { conto, carta, map: { data: mm.data, desc: mm.desc, desc2: mm.desc2, imp: mm.imp, fee: mm.fee, dare: mm.dare, avere: mm.avere } };
+        E.conti[conto] = { carta, ultimo: ultima > (E.conti[conto]?.ultimo || "") ? ultima : E.conti[conto]?.ultimo, file: file.name, il: new Date().toISOString() };
         E._rev = (E._rev || 0) + 1; saveE(); close();
         toast(nuovi.length ? plural(nuovi.length, "movimento nuovo", "movimenti nuovi") : "Niente di nuovo", nuovi.length ? `da ${conto}${SECURE ? " · ora puoi cancellare il file dalla cartella Download" : ""}` : "Questi movimenti li avevi già caricati.", nuovi.length ? "ok" : "");
         F.eTab = "mancante"; if (view !== "estratti" && view !== "anni") go("estratti"); else { animate = false; render(); }
@@ -1097,7 +1108,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
   }
 
   // ============================= ESTRATTI =============================
-  const TABS_E = [["mancante", "Da aggiungere"], ["doppione", "Da controllare"], ["abbinata", "Già in Spiccio"], ["fissa", "Spese fisse"], ["altro", "Giroconti e commissioni"], ["entrata", "Entrate"], ["ignorato", "Ignorati"]];
+  const TABS_E = [["mancante", "Da aggiungere"], ["cartaMov", "Carta di credito"], ["doppione", "Da controllare"], ["abbinata", "Già in Spiccio"], ["fissa", "Spese fisse"], ["altro", "Giroconti e commissioni"], ["entrata", "Entrate"], ["ignorato", "Ignorati"]];
   function renderEstratti() {
     const re = riepilogoE(), conti = Object.entries(E.conti);
     const drop = `<section class="drop ${anim()}" id="drop">
@@ -1122,8 +1133,8 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       ["Da controllare", re.doppione.length, "possibili doppioni", re.doppione.length ? "wrn" : ""],
     ].map(([k, v, s, c]) => `<section class="card tilt kpi s3 pad-s ${anim()}"><div class="k">${k}</div><div class="v ${c === "acc" ? "" : c}" ${c === "acc" ? 'style="color:var(--acc)"' : ""}>${v}</div><div class="s">${s}</div></section>`).join("");
 
-    const n = { mancante: re.mancante.length, doppione: re.doppione.length, abbinata: re.abbinata.length, fissa: re.fissa.length, altro: re.giroconto.length + re.commissione.length + re.carta.length, entrata: re.entrata.length, ignorato: re.ignorato.length };
-    const seg = `<div class="seg" style="flex-wrap:wrap">${TABS_E.map(([k, l]) => `<button data-act="eTab" data-v="${k}" aria-pressed="${F.eTab === k}">${l} · ${n[k]}</button>`).join("")}</div>`;
+    const n = { cartaMov: re.cartaMov.length, mancante: re.mancante.length, doppione: re.doppione.length, abbinata: re.abbinata.length, fissa: re.fissa.length, altro: re.giroconto.length + re.commissione.length + re.carta.length, entrata: re.entrata.length, ignorato: re.ignorato.length };
+    const seg = `<div class="seg" style="flex-wrap:wrap">${TABS_E.filter(([k]) => k !== "cartaMov" || n.cartaMov).map(([k, l]) => `<button data-act="eTab" data-v="${k}" aria-pressed="${F.eTab === k}">${l} · ${n[k]}</button>`).join("")}</div>`;
 
     // colonna destra
     const ab = abbonamenti();
@@ -1164,7 +1175,8 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       if (r.tipo === "fissa") return `<span class="badge n">${esc(r.fissa.nome)}</span>`;
       if (r.tipo === "giroconto") return `<span class="badge n">giroconto</span>`;
       if (r.tipo === "commissione") return `<span class="badge warn">costo della banca</span>`;
-      if (r.tipo === "carta") return `<span class="badge n">saldo carta di credito</span>`;
+      if (r.tipo === "carta") return `<span class="badge n">saldo carta di credito${r.coperto ? " · dettaglio caricato" : ""}</span>`;
+      if (r.tipo === "cartaMov") return catSel(m);
       if (r.tipo === "entrata") return `<span class="badge ok">entrata</span>`;
       if (r.tipo === "ignorato") return `<span class="badge n">ignorato</span>`;
       return catSel(m);
@@ -1179,7 +1191,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     };
     const sel = F.eTab === "mancante";
     $("#etbl").innerHTML = v.length ? `<div style="overflow-x:auto"><table class="t" style="min-width:680px">
-      <thead><tr>${sel ? `<th class="nos" style="padding-left:22px"><input type="checkbox" id="eck-all" ${v.every(m => F.eSel.has(m.id)) ? "checked" : ""} aria-label="Seleziona tutto"></th>` : ""}<th class="nos" style="${sel ? "" : "padding-left:22px"}">Data</th><th class="nos">Come lo scrive la banca</th><th class="nos">${F.eTab === "mancante" ? "Categoria proposta" : "In Spiccio"}</th><th class="nos r">Importo</th><th class="nos r" style="padding-right:22px"></th></tr></thead>
+      <thead><tr>${sel ? `<th class="nos" style="padding-left:22px"><input type="checkbox" id="eck-all" ${v.every(m => F.eSel.has(m.id)) ? "checked" : ""} aria-label="Seleziona tutto"></th>` : ""}<th class="nos" style="${sel ? "" : "padding-left:22px"}">Data</th><th class="nos">Come lo scrive la banca</th><th class="nos">${F.eTab === "mancante" || F.eTab === "cartaMov" ? "Categoria" : "In Spiccio"}</th><th class="nos r">Importo</th><th class="nos r" style="padding-right:22px"></th></tr></thead>
       <tbody>${v.slice(0, 400).map(m => `<tr class="${F.eSel.has(m.id) ? "sel" : ""}">${sel ? `<td style="padding-left:22px"><input type="checkbox" data-eck="${m.id}" ${F.eSel.has(m.id) ? "checked" : ""} aria-label="Seleziona"></td>` : ""}
         <td class="dt" style="${sel ? "" : "padding-left:22px"}">${dDay(new Date(m.data))}</td>
         <td class="nt"><span class="a" style="cursor:default">${esc(pulisci(m.desc))}</span><span class="raw">${esc(m.conto)} · ${esc(m.desc)}</span></td>
@@ -1203,7 +1215,12 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     if (!$("#etbl")) return;
     $("#v").onchange = e => {
       const t = e.target;
-      if (t.dataset.ecat) { F.eCat[t.dataset.ecat] = t.value; return; }
+      if (t.dataset.ecat) {
+        F.eCat[t.dataset.ecat] = t.value;
+        const m = E.mov.find(x => x.id === t.dataset.ecat);
+        if (m && F.eTab === "cartaMov" && t.value) { m.cat = t.value; E._rev = (E._rev || 0) + 1; saveE(); commit(S => K.impara(pulisci(m.desc), t.value, null, null), { after: null }); }
+        return;
+      }
       if (t.dataset.eck) { t.checked ? F.eSel.add(t.dataset.eck) : F.eSel.delete(t.dataset.eck); t.closest("tr").classList.toggle("sel", t.checked); renderTabE(); return; }
       if (t.id === "eck-all") { movDellaTab().forEach(m => t.checked ? F.eSel.add(m.id) : F.eSel.delete(m.id)); renderTabE(); }
     };
@@ -1357,11 +1374,11 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       const r = a.get(m.id); if (!r || r.tipo === "ignorato" || m.cat === "_skip") continue;
       const d = new Date(m.data), imp = Math.abs(m.importo), nome = pulisci(m.desc), k = ym(d);
       if (k < min) min = k; if (k > max) max = k;
-      if (m.importo > 0) { if (r.tipo !== "giroconto") out.push({ d, imp, tipo: "entrata", grp: RX_STIP.test(m.desc) ? "Stipendio" : "Altre entrate", nome }); continue; }
+      if (m.importo > 0) { if (r.tipo !== "giroconto") out.push({ d, imp, tipo: "entrata", grp: RX_STIP.test(m.desc) ? "Stipendio" : "Extra", nome }); continue; }
       if (r.tipo === "abbinata") { usate.add(r.spesa.id); out.push({ d, imp, tipo: "uscita", cat: r.spesa.cat, sub: r.spesa.sub, nome: r.spesa.nota || nome }); continue; }
       if (r.tipo === "fissa") { out.push({ d, imp, tipo: "uscita", cat: "_fisse", sub: r.fissa.nome, nome: r.fissa.nome }); continue; }
       if (r.tipo === "commissione") { out.push({ d, imp, tipo: "uscita", cat: "_banca", sub: nome, nome }); continue; }
-      if (r.tipo === "carta") { out.push({ d, imp, tipo: "uscita", cat: "_carta", nome: "Saldo carta di credito" }); continue; }
+      if (r.tipo === "carta") { if (!r.coperto) out.push({ d, imp, tipo: "uscita", cat: "_carta", nome: "Saldo carta di credito" }); continue; }
       if (r.tipo === "giroconto") {
         if (RX_RISP.test(m.desc)) out.push({ d, imp, tipo: "risparmio", nome });
         else if (RX_REVOLUT.test(m.desc) && d < primo) out.push({ d, imp, tipo: "uscita", cat: "_revolut", nome: /satispay/i.test(m.desc) ? "Ricarica Satispay" : "Ricarica Revolut" });
@@ -1399,6 +1416,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     const ini = Math.max(+new Date(y0, m0 - 1, 1), +voci[0].d), fin = Math.min(+new Date(y1, m1, 0, 23), +voci.at(-1).d);
     return Math.max(.5, ((fin - ini) / 864e5 + 1) / 30.44);
   }
+  const sommaStip = voci => somma(voci.filter(v => v.tipo === "entrata" && v.grp === "Stipendio"), v => v.imp);
   const sommaT = (voci, tipo) => somma(voci.filter(v => v.tipo === tipo), v => v.imp);
   function perCat(voci) {
     const o = {};
@@ -1416,12 +1434,13 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       </section></div>`;
     const fl = flusso(), R = rangeAnni(fl), V = R.voci, nM = mesiEffettivi(V, R.sel);
     const ent = sommaT(V, "entrata"), usc = sommaT(V, "uscita"), risp = ent - usc, tasso = ent > 0 ? risp / ent : 0;
+    const stip = sommaStip(V), extra = ent - stip, rispS = stip - usc;
     const anni = [...new Set(R.mesi.map(k => k.slice(0, 4)))];
     const dalAl = R.sel.length ? `${MESI[+R.sel[0].slice(5) - 1].slice(0, 3)} ${R.sel[0].slice(0, 4)} – ${MESI[+R.sel.at(-1).slice(5) - 1].slice(0, 3)} ${R.sel.at(-1).slice(0, 4)}` : "—";
     const kpi = [
-      ["Entrate", M0(ent), `${M0(ent / nM)} al mese in media`, ""],
+      ["Stipendi", M0(stip), `${M0(stip / nM)} al mese${extra > 0.5 ? ` · più ${M0(extra)} di entrate extra` : ""}`, ""],
       ["Uscite", M0(usc), `${M0(usc / nM)} al mese in media`, ""],
-      [risp >= 0 ? "Risparmiato" : "Speso più di quanto entrato", M0(Math.abs(risp)), `${Math.round(tasso * 100)}% delle entrate`, risp >= 0 ? "pos" : "neg"],
+      [rispS >= 0 ? "Risparmiato dallo stipendio" : "Speso più dello stipendio", M0(Math.abs(rispS)), stip > 0 ? `${Math.round(rispS / stip * 100)}% dello stipendio${extra > 0.5 ? ` · con le extra ${MS(risp)}` : ""}` : "", rispS >= 0 ? "pos" : "neg"],
       ["Periodo", nM >= 11.5 ? plural(Math.round(nM / 12 * 10) / 10, "anno", "anni").replace(".", ",") : plural(Math.round(nM), "mese", "mesi"), dalAl, ""],
     ].map(([k, v, s, c]) => `<section class="card tilt kpi s3 pad-s ${anim()}"><div class="k">${k}</div><div class="v ${c}">${v}</div><div class="s">${s}</div></section>`).join("");
 
@@ -1468,6 +1487,9 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     const piccole = V.filter(v => v.tipo === "uscita" && v.imp > 0 && v.imp < 10 && v.cat !== "_banca");
     const ab = abbonamenti(), abAnno = somma(ab.filter(x => x.nota !== "fissa" || true), x => x.importo) * 12;
 
+    const ext = V.filter(v => v.tipo === "entrata" && v.grp !== "Stipendio").sort((a, b) => b.imp - a.imp);
+    const extH = ext.length ? `<section class="card s12 ${anim()}"><h2>Entrate extra <span class="r">${M0(extra)} · non contano nel risparmio dallo stipendio</span></h2><p class="lead">Rimborsi, regali e bonifici una tantum. Li tengo separati per vedere se lo stipendio basta a coprire le spese.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:0 24px">${ext.slice(0, 12).map(v => `<div class="li"><div class="tx"><div class="t1">${esc(v.nome)}</div><div class="t2">${dMed(v.d)}</div></div><span class="x pos">+${M(v.imp)}</span></div>`).join("")}</div>${ext.length > 12 ? `<p class="note">e altre ${ext.length - 12}.</p>` : ""}</section>` : "";
     const sugg = suggerimenti(fl, R);
     const suggH = sugg.map(x => `<section class="card tilt s4 pad-s ${anim()}"><div class="insight"><span class="ic" style="background:${x.bg};color:${x.col}">${ic(x.icon, 18)}</span><div><b>${x.t}</b><span>${x.s}</span></div></div></section>`).join("");
 
@@ -1477,12 +1499,13 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
         ${nocat ? `<button class="btn soft" data-act="categorizza">${ic("tag", 16)} ${plural(nocatN, "uscita", "uscite")} da categorizzare · ${M0(nocat.tot)}</button>` : ""}
         <button class="btn" data-act="perClaude" title="Copia un riepilogo senza dati personali da incollare in chat">${ic("copy", 16)} Riepilogo per Claude</button></div>
       ${kpi}
-      <section class="card s12 ${anim()}"><h2>Entrate e uscite anno per anno <span class="r">quanto ti è rimasto in tasca</span></h2><p class="lead">${anni.length > 1 ? "Sopra ogni anno: quanto hai risparmiato e che parte delle entrate rappresenta." : "Carica altri anni per vedere il confronto."}</p>
+      <section class="card s12 ${anim()}"><h2>Entrate e uscite anno per anno <span class="r">quanto ti è rimasto in tasca</span></h2><p class="lead">Sopra ogni anno: quanto ti è rimasto dello stipendio, senza contare le entrate extra.${anni.length > 1 ? "" : " Carica altri anni per vedere il confronto."}</p>
         <div class="chart" data-chart="anni" style="height:300px"></div></section>
       ${sugg.length ? `<div class="s12 ${anim()}"><h2 class="disp" style="margin:6px 0 0;font-size:17px">Cosa ti suggerisco</h2></div>${suggH}` : ""}
       <section class="card s7 ${anim()}"><h2>Dove sono finiti i soldi <span class="r">${F.anno === "tutto" ? "tutto il periodo" : F.anno === "12" ? "ultimi 12 mesi" : F.anno} · clic per il dettaglio</span></h2><p class="lead">Uscite per categoria, con le spese fisse e i costi della banca.</p>${dove}</section>
       <section class="card s5 ${anim()}"><h2>Come cambia la spesa <span class="r">mese per mese</span></h2><p class="lead">Barre: uscite del mese. Linea: media degli ultimi 12 mesi.</p><div class="chart" data-chart="mesiSt" style="height:300px"></div></section>
       ${det}
+      ${extH}
       <section class="card s12 ${anim()}"><h2>Categorie anno per anno <span class="r">media al mese · più scuro = più alto</span></h2>${tab}</section>
       <section class="card tilt s4 ${anim()}"><h2>Dove torni più spesso</h2>${topEs.map((x, i) => `<div class="li"><span class="disp mut" style="width:22px;font-weight:700">${i + 1}</span><div class="tx"><div class="t1">${esc(x.nome)}</div><div class="t2">${plural(x.n, "volta", "volte")} · ${M(x.t / x.n)} in media</div></div><span class="x">${M0(x.t)}</span></div>`).join("") || `<div class="empty">—</div>`}</section>
       <section class="card tilt s4 ${anim()}"><h2>Le piccole spese <span class="r">sotto i 10 €</span></h2><div class="disp" style="font-size:34px;font-weight:700;margin-top:6px">${M0(somma(piccole, v => v.imp) / nM * 12)}<span class="mut" style="font-size:15px;font-weight:600"> all'anno</span></div>
@@ -1496,12 +1519,13 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     const out = [], mesi = R.mesi, l12 = new Set(mesi.slice(-12)), p12 = new Set(mesi.slice(-24, -12));
     const V12 = fl.voci.filter(v => l12.has(ym(v.d))), P12 = fl.voci.filter(v => p12.has(ym(v.d)));
     const n12 = mesiEffettivi(V12, [...l12]), np = p12.size;
-    const e12 = sommaT(V12, "entrata"), u12 = sommaT(V12, "uscita"), r12 = e12 - u12, t12 = e12 > 0 ? r12 / e12 : 0;
+    const eTot12 = sommaT(V12, "entrata"), s12 = sommaStip(V12), e12 = s12 > 0 ? s12 : eTot12, x12 = eTot12 - e12;
+    const u12 = sommaT(V12, "uscita"), r12 = e12 - u12, t12 = e12 > 0 ? r12 / e12 : 0;
     const anno = x => x / n12 * 12;
     // 1. tasso di risparmio
-    if (e12 > 0) out.push(t12 >= .2 ? { icon: "star", bg: "var(--ok-soft)", col: "var(--ok)", imp: 1e9, t: `Risparmi il ${Math.round(t12 * 100)}% di quello che entra`, s: `Negli ultimi ${Math.round(n12)} mesi ti sono rimasti ${M0(r12)}. Sopra il 20% è un ottimo ritmo: il passo dopo è far lavorare quei soldi.` }
-      : t12 >= 0 ? { icon: "target", bg: "var(--warn-soft)", col: "var(--warn)", imp: 1e9, t: `Risparmi il ${Math.round(t12 * 100)}% delle entrate`, s: `Negli ultimi ${Math.round(n12)} mesi ti sono rimasti ${M0(r12)}. Arrivare al 20% vorrebbe dire ${M0(anno(e12 * .2 - r12) / 12)} in più ogni mese.` }
-      : { icon: "flame", bg: "var(--bad-soft)", col: "var(--bad)", imp: 1e9, t: "Negli ultimi 12 mesi è uscito più di quanto è entrato", s: `Mancano ${M0(-r12)}. Le categorie qui sotto dicono da dove partire.` });
+    if (e12 > 0) out.push(t12 >= .2 ? { icon: "star", bg: "var(--ok-soft)", col: "var(--ok)", imp: 1e9, t: `Risparmi il ${Math.round(t12 * 100)}% dello stipendio`, s: `Negli ultimi ${Math.round(n12)} mesi ti sono rimasti ${M0(r12)} senza contare le entrate extra. Sopra il 20% è un ottimo ritmo: il passo dopo è far lavorare quei soldi.` }
+      : t12 >= 0 ? { icon: "target", bg: "var(--warn-soft)", col: "var(--warn)", imp: 1e9, t: `Risparmi il ${Math.round(t12 * 100)}% dello stipendio`, s: `Negli ultimi ${Math.round(n12)} mesi ti sono rimasti ${M0(r12)}, entrate extra escluse. Arrivare al 20% vorrebbe dire ${M0(anno(e12 * .2 - r12) / 12)} in più ogni mese.` }
+      : { icon: "flame", bg: "var(--bad-soft)", col: "var(--bad)", imp: 1e9, t: "Spendi più di quanto guadagni con lo stipendio", s: `Negli ultimi ${Math.round(n12)} mesi le uscite hanno superato gli stipendi di ${M0(-r12)}, circa ${M0(-r12 / n12)} al mese${x12 > 0.5 ? `. A coprire la differenza sono state le entrate extra (${M0(x12)})` : ""}. Le categorie qui sotto dicono da dove partire.` });
     // 2. spese che crescono più delle entrate
     if (np >= 10) {
       const ep = sommaT(P12, "entrata") / np * 12, up = sommaT(P12, "uscita") / np * 12, ea = anno(e12), ua = anno(u12);
@@ -1563,11 +1587,12 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
   function riepilogoPerClaude() {
     const fl = flusso(), mesi = mesiCoperti(fl), anni = [...new Set(mesi.map(k => k.slice(0, 4)))];
     const righe = [`Riepilogo delle mie finanze personali (da estratti conto e Spiccio), ${mesi.length} mesi: ${mesi[0]} → ${mesi.at(-1)}.`, ""];
-    righe.push("ANNO | mesi | entrate | uscite | risparmio | % risparmio");
+    righe.push("ANNO | mesi | stipendi | entrate extra | uscite | risparmio dallo stipendio");
     for (const y of anni) {
       const vv = fl.voci.filter(v => String(v.d.getFullYear()) === y), n = mesi.filter(k => k.startsWith(y)).length;
       const e = sommaT(vv, "entrata"), u = sommaT(vv, "uscita");
-      righe.push(`${y} | ${n} | ${eur0(e)} | ${eur0(u)} | ${eur0(e - u)} | ${e ? Math.round((e - u) / e * 100) : 0}%`);
+      const st = sommaStip(vv);
+      righe.push(`${y} | ${n} | ${eur0(st)} | ${eur0(e - st)} | ${eur0(u)} | ${eur0(st - u)} (${st ? Math.round((st - u) / st * 100) : 0}%)`);
     }
     righe.push("", "USCITE PER CATEGORIA, media al mese per anno:");
     const mesiAnno = Object.fromEntries(anni.map(y => [y, mesi.filter(k => k.startsWith(y)).length]));
@@ -1756,22 +1781,22 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
   const CHARTS = {
     anni(el) {
       const fl = flusso(), mesi = mesiCoperti(fl), anni = [...new Set(mesi.map(k => k.slice(0, 4)))];
-      const rows = anni.map(y => { const vv = fl.voci.filter(v => String(v.d.getFullYear()) === y); return { y, e: sommaT(vv, "entrata"), u: sommaT(vv, "uscita"), n: mesi.filter(k => k.startsWith(y)).length }; });
+      const rows = anni.map(y => { const vv = fl.voci.filter(v => String(v.d.getFullYear()) === y); return { y, e: sommaT(vv, "entrata"), s: sommaStip(vv), u: sommaT(vv, "uscita"), n: mesi.filter(k => k.startsWith(y)).length }; });
       const w = W(el), h = H(el), x0 = 70, top = 52, base = h - 44;
       const mx = niceMax(Math.max(1, ...rows.flatMap(r => [r.e, r.u])) * 1.05), y = v => base - (base - top) * v / mx;
       let o = `<svg width="${w}" height="${h}" role="img" aria-label="Entrate e uscite per anno">`;
       for (let t = 0; t <= 4; t++) { const v = mx * t / 4; o += `<line x1="${x0}" x2="${w}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${x0 - 10}" y="${y(v) + 4}" text-anchor="end" fill="var(--mut)" font-size="12">${t ? fmtAx(v) : "0"}</text>`; }
       const gw = (w - x0) / Math.max(1, rows.length), bar = Math.min(54, gw * .3);
       rows.forEach((r, i) => {
-        const cx = x0 + gw * (i + .5), dim = F.anno !== "tutto" && F.anno !== "12" && F.anno !== r.y, risp = r.e - r.u;
-        o += `<g class="bh" style="opacity:${dim ? .4 : 1}" ${tip(`<b>${r.y}</b>${r.n < 12 ? ` · ${r.n} mesi` : ""}<br>Entrate ${M(r.e)}<br>Uscite ${M(r.u)}<br>${risp >= 0 ? "Risparmiato" : "Mancano"} ${M(Math.abs(risp))}${r.e ? ` (${Math.round(risp / r.e * 100)}%)` : ""}`)}><rect x="${cx - gw / 2}" y="0" width="${gw}" height="${base}" fill="transparent"/>`;
-        o += `<path class="growy" style="transform-origin:${cx}px ${base}px;animation-delay:${.2 + i * .08}s" d="${roundTop(cx - bar - 3, y(r.e), bar, base, 7)}" fill="var(--s3)"/>`;
+        const cx = x0 + gw * (i + .5), dim = F.anno !== "tutto" && F.anno !== "12" && F.anno !== r.y, base0 = r.s > 0 ? r.s : r.e, risp = base0 - r.u, ext = r.e - base0;
+        o += `<g class="bh" style="opacity:${dim ? .4 : 1}" ${tip(`<b>${r.y}</b>${r.n < 12 ? ` · ${r.n} mesi` : ""}<br>Stipendi ${M(base0)}${ext > 0.5 ? `<br>Entrate extra ${M(ext)}` : ""}<br>Uscite ${M(r.u)}<br>${risp >= 0 ? "Risparmiato dallo stipendio" : "Speso più dello stipendio"} ${M(Math.abs(risp))}`)}><rect x="${cx - gw / 2}" y="0" width="${gw}" height="${base}" fill="transparent"/>`;
+        o += `<g class="growy" style="transform-origin:${cx}px ${base}px;animation-delay:${.2 + i * .08}s">${ext > 0.5 ? `<path d="${roundTop(cx - bar - 3, y(r.e), bar, y(base0) - 2, 7)}" fill="var(--s3)" opacity=".38"/><rect x="${cx - bar - 3}" y="${y(base0)}" width="${bar}" height="${Math.max(0, base - y(base0))}" fill="var(--s3)"/>` : `<path d="${roundTop(cx - bar - 3, y(r.e), bar, base, 7)}" fill="var(--s3)"/>`}</g>`;
         o += `<path class="growy" style="transform-origin:${cx}px ${base}px;animation-delay:${.26 + i * .08}s" d="${roundTop(cx + 3, y(r.u), bar, base, 7)}" fill="var(--s2)"/>`;
         o += `<text x="${cx}" y="${Math.min(y(r.e), y(r.u)) - 26}" text-anchor="middle" fill="${risp >= 0 ? "var(--ok)" : "var(--bad)"}" font-family="Space Grotesk" font-size="17" font-weight="700">${risp >= 0 ? "+" : "−"}${M0(Math.abs(risp))}</text>`;
-        o += `<text x="${cx}" y="${Math.min(y(r.e), y(r.u)) - 9}" text-anchor="middle" fill="var(--mut)" font-size="12">${r.e ? Math.round(risp / r.e * 100) + "% risparmiato" : ""}</text>`;
+        o += `<text x="${cx}" y="${Math.min(y(r.e), y(r.u)) - 9}" text-anchor="middle" fill="var(--mut)" font-size="12">${base0 ? (risp >= 0 ? "risparmiato dallo stipendio" : "oltre lo stipendio") : ""}</text>`;
         o += `<text x="${cx}" y="${base + 22}" text-anchor="middle" fill="var(--ink)" font-size="14" font-weight="700">${r.y}</text>${r.n < 12 ? `<text x="${cx}" y="${base + 38}" text-anchor="middle" fill="var(--mut)" font-size="11.5">${r.n} mesi</text>` : ""}</g>`;
       });
-      o += `<g transform="translate(${x0},16)"><rect x="0" y="-10" width="12" height="12" rx="3" fill="var(--s3)"/><text x="18" y="0" fill="var(--mut)" font-size="12.5">entrate</text><rect x="86" y="-10" width="12" height="12" rx="3" fill="var(--s2)"/><text x="104" y="0" fill="var(--mut)" font-size="12.5">uscite</text></g>`;
+      o += `<g transform="translate(${x0},16)"><rect x="0" y="-10" width="12" height="12" rx="3" fill="var(--s3)"/><text x="18" y="0" fill="var(--mut)" font-size="12.5">stipendi</text><rect x="90" y="-10" width="12" height="12" rx="3" fill="var(--s3)" opacity=".38"/><text x="108" y="0" fill="var(--mut)" font-size="12.5">entrate extra</text><rect x="214" y="-10" width="12" height="12" rx="3" fill="var(--s2)"/><text x="232" y="0" fill="var(--mut)" font-size="12.5">uscite</text></g>`;
       return o + `</svg>`;
     },
     mesiSt(el) {
