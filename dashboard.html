@@ -470,9 +470,27 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
 
   // ============================ ESTRATTI ==============================
   const RX_COMM = /commission|comm\.|canone|imposta di bollo|bollo |spese tenuta|competenze|interessi passivi|\bfee\b/i;
-  const RX_GIRO = /giroconto|ricarica|top.?up|trasferimento (tra|fra|a) |bonifico a (me|luca)|\btransfer to\b|exchanged to|carta prepagata/i;
+  const RX_GIRO = /giroconto|ricarica|top.?up|trasferimento (tra|fra|a) |bonifico a (me|luca)|\btransfer to\b|exchanged to|carta prepagata|inviato da revolut/i;
+  const RX_SALDOCARTA = /ADDEBITO UTILIZZO CARTA DI CREDITO|^Addebito Carta -|saldo (estratto )?carta|addebito (estratto conto )?carta di credito/i;
+  const mio = desc => (E.nomi || []).some(n => { const a = n.toUpperCase(), b = a.split(" ").reverse().join(" "); return new RegExp(`(BEN\\.|ORD\\.)\\s*(${a}|${b})\\b`, "i").test(desc); });
+  // Descrizioni in stile Mediobanca Premier: tiro fuori l'esercente o la controparte
+  function pulisciBanca(raw) {
+    const s = String(raw || "");
+    let m = s.match(/PAGAMENTO POS [\d.,]+ [A-Z]{3} DEL \d{2}\.\d{2}\.\d{2,4} A (?:[A-Z] )?\([A-Z]{3}\) (.+?)(?:\s{2,}|\s+CARTA \*|$)/i);
+    if (m) return m[1];
+    if ((m = s.match(/^POS-(.+)$/i))) return m[1];
+    if (/PRELIEVO/i.test(s) && /bancomat|E\/C|ATM/i.test(s)) return "Prelievo bancomat";
+    if (/^Addebito canone/i.test(s)) return "Canone conto";
+    if (/ADDEBITO UTILIZZO CARTA DI CREDITO|^Addebito Carta/i.test(s)) return "Saldo carta di credito";
+    if ((m = s.match(/^Addebito SDD - (.+?)(?:\s*-\s*|\s{2,})/i))) return m[1].replace(/\s+S\.?$/i, "").replace(/^INVESTMENT/i, "");
+    if ((m = s.match(/^Stipendio - .*?ORD\.\s*(.+?)\s+(RETRIBUZIONE|STIPENDIO|EMOLUMENTI|\/)/i))) return "Stipendio " + m[1];
+    if ((m = s.match(/(?:BEN\.|ORD\.)\s*(.+)$/i))) return m[1].replace(/\bINST\b/i, "").replace(/\/SEPASCT\/?/i, "");
+    return null;
+  }
   function pulisci(desc) {
     let s = String(desc || "").split(" · ")[0].replace(/\s+/g, " ").trim();
+    const mb = pulisciBanca(String(desc || "").split(" · ")[0]); if (mb) s = mb.replace(/\s+/g, " ").trim();
+    s = s.replace(/^(sumup|zettle-?|sum|sq \*|sp \*|paypal \*)\s+/i, "");
     s = s.replace(/^(pagamento|pag\.?|operazione|acquisto|addebito)\s+(pos|carta|con carta|contactless|sdd|diretto|bancomat)\s*/i, "")
       .replace(/^(pos|sdd|addebito sdd|addebito diretto|pagamento|pag)\s+/i, "")
       .replace(/carta\s*(n\.?|nr\.?)?\s*[\d*x]{4,}/ig, "").replace(/\b\d{2}[\/.-]\d{2}([\/.-]\d{2,4})?\b/g, "")
@@ -484,9 +502,11 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
   }
   const chiaveRic = d => pulisci(d).toLowerCase().replace(/[^a-zà-ù ]/g, " ").replace(/\s+/g, " ").trim().split(" ").slice(0, 2).join(" ");
   const primaSpesa = () => S.spese.length ? new Date(Math.min(...S.spese.map(x => +new Date(x.ts)))) : new Date();
+  const STOP = new Set(["conto", "rata", "quota", "mensile", "abbonamento", "spesa", "spese", "pagamento", "tua", "metà"]);
   function somiglia(desc, nome) {
-    const a = desc.toLowerCase(), w = nome.toLowerCase().replace(/\(.*?\)/g, "").split(/[^a-zà-ù0-9]+/).filter(x => x.length >= 3);
-    return w.some(x => a.includes(x));
+    const a = " " + desc.toLowerCase().replace(/[^a-zà-ù0-9]+/g, " ") + " ";
+    const w = nome.toLowerCase().replace(/\(.*?\)/g, "").split(/[^a-zà-ù0-9]+/).filter(x => x.length >= 4 && !STOP.has(x));
+    return w.some(x => a.includes(" " + x + " ") || a.includes(" " + x));
   }
   // Abbina ogni movimento della banca a quello che c'è in Spiccio.
   let _abb = null, _abbKey = "";
@@ -501,7 +521,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     for (const m of movs) {
       const d = new Date(m.data), imp = Math.abs(m.importo);
       if (m.stato === "ignorato") { out.set(m.id, { tipo: "ignorato" }); continue; }
-      if (m.importo > 0) { out.set(m.id, { tipo: RX_GIRO.test(m.desc) ? "giroconto" : "entrata" }); continue; }
+      if (m.importo > 0) { out.set(m.id, { tipo: RX_GIRO.test(m.desc) || mio(m.desc) ? "giroconto" : "entrata" }); continue; }
       const esplicita = perDaEstratto.get(m.id);
       if (esplicita) { usate.add(esplicita.id); out.set(m.id, { tipo: "abbinata", spesa: esplicita }); continue; }
       let best = null, bd = 99;
@@ -513,11 +533,12 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       }
       if (best) { usate.add(best.id); out.set(m.id, { tipo: "abbinata", spesa: best }); continue; }
       if (RX_COMM.test(m.desc)) { out.set(m.id, { tipo: "commissione" }); continue; }
-      if (RX_GIRO.test(m.desc)) { out.set(m.id, { tipo: "giroconto" }); continue; }
-      const fissa = S.fisse.find(f => (Math.abs(f.importo - imp) <= Math.max(1, f.importo * .03) && (somiglia(m.desc, f.nome) || Math.abs(d.getDate() - f.giorno) <= 4)) || (somiglia(m.desc, f.nome) && (f.variabile || Math.abs(f.importo - imp) <= f.importo * .3)));
+      if (RX_SALDOCARTA.test(m.desc)) { out.set(m.id, { tipo: "carta" }); continue; }
+      const fissa = S.fisse.find(f => (somiglia(m.desc, f.nome) && (f.variabile || Math.abs(f.importo - imp) <= f.importo * .3)) || (imp >= 50 && Math.abs(f.importo - imp) <= Math.max(.02, f.importo * .01) && Math.abs(d.getDate() - f.giorno) <= 3));
       if (fissa) { out.set(m.id, { tipo: "fissa", fissa }); continue; }
-      const ann = S.annualiDef.find(a => Math.abs(a.importo - imp) <= Math.max(1, a.importo * .03) && (somiglia(m.desc, a.nome) || (a.mesi || []).includes(d.getMonth() + 1) && Math.abs(a.importo - imp) <= a.importo * .01));
+      const ann = S.annualiDef.find(a => (somiglia(m.desc, a.nome) && Math.abs(a.importo - imp) <= a.importo * .15) || ((a.mesi || []).includes(d.getMonth() + 1) && Math.abs(a.importo - imp) <= Math.max(.02, a.importo * .01)));
       if (ann) { out.set(m.id, { tipo: "fissa", fissa: ann }); continue; }
+      if (RX_GIRO.test(m.desc) || mio(m.desc)) { out.set(m.id, { tipo: "giroconto" }); continue; }
       if (d < inizio) { out.set(m.id, { tipo: "prima" }); continue; }
       out.set(m.id, { tipo: "mancante" });
     }
@@ -532,7 +553,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     return out;
   }
   function riepilogoE() {
-    const a = abbina(); const c = { mancante: [], doppione: [], abbinata: [], fissa: [], entrata: [], giroconto: [], commissione: [], ignorato: [], prima: [] };
+    const a = abbina(); const c = { mancante: [], doppione: [], abbinata: [], fissa: [], entrata: [], giroconto: [], commissione: [], carta: [], ignorato: [], prima: [] };
     for (const m of E.mov) { const r = a.get(m.id); if (!r) continue; c[r.tipo]?.push(m); if (r.doppione) c.doppione.push(m); }
     return c;
   }
@@ -545,9 +566,9 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     const a = abbina(), out = [];
     for (const [k, arr] of Object.entries(g)) {
       const mesiDist = new Set(arr.map(m => m.data.slice(0, 7)));
-      if (mesiDist.size < 2) continue;
+      if (mesiDist.size < 3) continue;
       const imps = arr.map(m => Math.abs(m.importo)), mn = Math.min(...imps), mx = Math.max(...imps);
-      if (mx / mn > 1.05 || arr.length > mesiDist.size) continue;
+      if (mx / mn > 1.05 || arr.length > mesiDist.size || (mn < 10 && mesiDist.size < 4)) continue;
       const ult = arr.slice().sort((x, y) => x.data < y.data ? 1 : -1)[0];
       const tipi = arr.map(m => a.get(m.id)?.tipo);
       const nota = tipi.includes("fissa") ? "fissa" : tipi.includes("abbinata") ? "spiccio" : "no";
@@ -647,6 +668,8 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       if (map.fee >= 0) { const f = parseAmount(String(r[map.fee])); if (isFinite(f) && f) imp -= Math.abs(f); }
       const d1 = String(map.desc >= 0 ? r[map.desc] : "").trim(), d2 = String(map.desc2 >= 0 ? r[map.desc2] : "").trim();
       const desc = ((d1 || d2) + (d1 && d2 && !d1.toLowerCase().includes(d2.toLowerCase()) ? " · " + d2 : "")).replace(/\s+/g, " ").trim() || "(senza descrizione)";
+      const dm = desc.match(/\bDEL (\d{2})[.\/](\d{2})[.\/](\d{4})\b/);
+      if (dm) { const dd = new Date(+dm[3], +dm[2] - 1, +dm[1], 12); if (Math.abs(dd - d) < 12 * 864e5) d.setTime(dd.getTime()); }
       const data = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}`;
       const id = "bk_" + hash(`${conto}|${data.slice(0, 10)}|${r2(imp)}|${desc}`);
       out.push({ id, conto, data, importo: r2(imp), desc });
@@ -655,6 +678,12 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     const visti = {};
     for (const m of out) { visti[m.id] = (visti[m.id] || 0) + 1; if (visti[m.id] > 1) m.id += "_" + visti[m.id]; }
     return out;
+  }
+  function indovinaNome(rows) {
+    const txt = rows.slice(0, 2000).map(r => r.join(" ")).join("\n");
+    let m = txt.match(/CARTA DI CREDITO\s+([A-Z][A-Z']+ [A-Z][A-Z']+)/); if (m) return m[1];
+    const c = {}; for (const x of txt.matchAll(/BEN\.\s*([A-Z][A-Z']+ [A-Z][A-Z']+)\s+(?:giroconto|GIROCONTO)/g)) c[x[1]] = (c[x[1]] || 0) + 1;
+    return Object.entries(c).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
   }
   function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
 
@@ -672,6 +701,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     const opt = (sel) => `<option value="-1">—</option>` + hdr.map((h, i) => `<option value="${i}"${i === sel ? " selected" : ""}>${esc(h || "colonna " + (i + 1))}</option>`).join("");
     const body = `<p class="note" style="margin-top:0">Ho letto <b>${esc(file.name)}</b>. Controlla che le colonne siano giuste: lo chiedo solo la prima volta per ogni banca.</p>
       <div class="fgrid" style="margin-top:14px">
+        <div class="fld w"><label>Il tuo nome come compare negli estratti</label><input class="inp" id="i-nome" value="${esc((E.nomi || [])[0] || indovinaNome(rows) || "")}" placeholder="es. ROSSI MARIO"><span class="note" style="margin:2px 0 0">Serve a riconoscere i bonifici tra i tuoi conti, che non sono né entrate né spese.</span></div>
         <div class="fld w"><label>Conto o carta</label><input class="inp" id="i-conto" list="i-conti" value="${esc(nomeDaFile)}" placeholder="es. Conto principale, Revolut, Amex…"><datalist id="i-conti">${conti.map(c => `<option value="${esc(c)}">`).join("")}</datalist></div>
         <div class="fld"><label>Data</label><select class="inp" id="i-data">${opt(map.data)}</select></div>
         <div class="fld"><label>Descrizione</label><select class="inp" id="i-desc">${opt(map.desc)}</select></div>
@@ -699,6 +729,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
         const nuovi = mv.filter(m => !ids.has(m.id));
         E.mov.push(...nuovi);
         const ultima = mv.reduce((a, m) => m.data > a ? m.data : a, "");
+        const nome = $("#i-nome", ov).value.trim().toUpperCase(); if (nome) E.nomi = [nome];
         E.mappe = E.mappe || {}; const mm = leggi(); E.mappe[firma] = { conto, map: { data: mm.data, desc: mm.desc, desc2: mm.desc2, imp: mm.imp, fee: mm.fee, dare: mm.dare, avere: mm.avere } };
         E.conti[conto] = { ultimo: ultima > (E.conti[conto]?.ultimo || "") ? ultima : E.conti[conto]?.ultimo, file: file.name, il: new Date().toISOString() };
         E._rev = (E._rev || 0) + 1; saveE(); close();
@@ -1086,12 +1117,12 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     const tot = E.mov.filter(m => abbina().get(m.id)?.tipo !== "prima").length;
     const kpi = [
       ["Movimenti dall'inizio di Spiccio", tot, `su ${E.mov.length} caricati`, ""],
-      ["Già in Spiccio o spese fisse", re.abbinata.length + re.fissa.length, "abbinati in automatico", "pos"],
+      ["Già in Spiccio o spese fisse", re.abbinata.length + re.fissa.length, `più ${re.giroconto.length + re.carta.length} giroconti e saldi carta`, "pos"],
       ["Mancano in Spiccio", re.mancante.length, `${M(somma(re.mancante, m => -m.importo))} non registrati`, "acc"],
       ["Da controllare", re.doppione.length, "possibili doppioni", re.doppione.length ? "wrn" : ""],
     ].map(([k, v, s, c]) => `<section class="card tilt kpi s3 pad-s ${anim()}"><div class="k">${k}</div><div class="v ${c === "acc" ? "" : c}" ${c === "acc" ? 'style="color:var(--acc)"' : ""}>${v}</div><div class="s">${s}</div></section>`).join("");
 
-    const n = { mancante: re.mancante.length, doppione: re.doppione.length, abbinata: re.abbinata.length, fissa: re.fissa.length, altro: re.giroconto.length + re.commissione.length, entrata: re.entrata.length, ignorato: re.ignorato.length };
+    const n = { mancante: re.mancante.length, doppione: re.doppione.length, abbinata: re.abbinata.length, fissa: re.fissa.length, altro: re.giroconto.length + re.commissione.length + re.carta.length, entrata: re.entrata.length, ignorato: re.ignorato.length };
     const seg = `<div class="seg" style="flex-wrap:wrap">${TABS_E.map(([k, l]) => `<button data-act="eTab" data-v="${k}" aria-pressed="${F.eTab === k}">${l} · ${n[k]}</button>`).join("")}</div>`;
 
     // colonna destra
@@ -1119,7 +1150,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     return E.mov.filter(m => {
       const r = a.get(m.id); if (!r) return false;
       if (F.eTab === "doppione") return !!r.doppione;
-      if (F.eTab === "altro") return r.tipo === "giroconto" || r.tipo === "commissione";
+      if (F.eTab === "altro") return r.tipo === "giroconto" || r.tipo === "commissione" || r.tipo === "carta";
       return r.tipo === F.eTab;
     }).sort((x, y) => x.data < y.data ? 1 : -1);
   }
@@ -1133,6 +1164,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       if (r.tipo === "fissa") return `<span class="badge n">${esc(r.fissa.nome)}</span>`;
       if (r.tipo === "giroconto") return `<span class="badge n">giroconto</span>`;
       if (r.tipo === "commissione") return `<span class="badge warn">costo della banca</span>`;
+      if (r.tipo === "carta") return `<span class="badge n">saldo carta di credito</span>`;
       if (r.tipo === "entrata") return `<span class="badge ok">entrata</span>`;
       if (r.tipo === "ignorato") return `<span class="badge n">ignorato</span>`;
       return catSel(m);
@@ -1141,7 +1173,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       const r = a.get(m.id);
       if (F.eTab === "doppione") return `<button class="btn sm soft" data-act="edit" data-id="${r.doppione.id}">Apri il doppione</button>`;
       if (r.tipo === "mancante") return `<button class="btn sm soft" data-act="eAdd" data-id="${m.id}">Aggiungi</button> <button class="btn sm ghost" data-act="eIgn" data-id="${m.id}">Ignora</button>`;
-      if (r.tipo === "commissione" || r.tipo === "giroconto") return `<button class="btn sm ghost" data-act="eAdd" data-id="${m.id}">Aggiungi comunque</button>`;
+      if (r.tipo === "commissione" || r.tipo === "giroconto" || r.tipo === "carta") return `<button class="btn sm ghost" data-act="eAdd" data-id="${m.id}">Aggiungi comunque</button>`;
       if (r.tipo === "ignorato") return `<button class="btn sm ghost" data-act="eRip" data-id="${m.id}">Ripristina</button>`;
       return "";
     };
@@ -1305,12 +1337,12 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
 
   // ============================ NEGLI ANNI ============================
   // Un flusso unico di entrate e uscite: estratti conto come base, Spiccio per il dettaglio.
-  const RX_REVOLUT = /revolut/i;
+  const RX_REVOLUT = /revolut|satispay|paypal/i;
   const RX_RISP = /conto deposito|deposito vincolato|vincolo|risparmio|salvadanaio|accantonamento|time deposit/i;
   const RX_STIP = /stipendio|emolument|retribuz|salary|cedolino|paga |accredito competenze/i;
   const RX_CARTA = /saldo (estratto )?carta|addebito (estratto conto )?carta di credito|american express|\bamex\b|\bnexi\b|estratto conto carta|addebito carta credito/i;
   const RX_PREL = /prelievo|prelev|\bprel\.|withdrawal|cash advance/i;
-  const VIRT = { _contanti: "Prelievi in contanti", _fisse: "Spese fisse e rate", _banca: "Costi della banca", _revolut: "Ricariche Revolut", _carta: "Carta di credito (in blocco)", _nocat: "Da categorizzare" };
+  const VIRT = { _contanti: "Prelievi in contanti", _fisse: "Spese fisse e rate", _banca: "Costi della banca", _revolut: "Ricariche Revolut e Satispay", _carta: "Carta di credito (in blocco)", _nocat: "Da categorizzare" };
   const nomeCat = id => VIRT[id] || K.catNome(id);
   const colCat2 = id => id === "_nocat" ? "var(--dim)" : id === "_fisse" ? "var(--ink2)" : id in VIRT ? "var(--s8)" : colCat(id);
   const ym = d => `${d.getFullYear()}-${p2(d.getMonth() + 1)}`;
@@ -1329,9 +1361,10 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
       if (r.tipo === "abbinata") { usate.add(r.spesa.id); out.push({ d, imp, tipo: "uscita", cat: r.spesa.cat, sub: r.spesa.sub, nome: r.spesa.nota || nome }); continue; }
       if (r.tipo === "fissa") { out.push({ d, imp, tipo: "uscita", cat: "_fisse", sub: r.fissa.nome, nome: r.fissa.nome }); continue; }
       if (r.tipo === "commissione") { out.push({ d, imp, tipo: "uscita", cat: "_banca", sub: nome, nome }); continue; }
+      if (r.tipo === "carta") { if (d < primo) out.push({ d, imp, tipo: "uscita", cat: "_carta", nome: "Saldo carta di credito" }); continue; }
       if (r.tipo === "giroconto") {
         if (RX_RISP.test(m.desc)) out.push({ d, imp, tipo: "risparmio", nome });
-        else if (RX_REVOLUT.test(m.desc) && d < primo) out.push({ d, imp, tipo: "uscita", cat: "_revolut", nome: "Ricarica Revolut" });
+        else if (RX_REVOLUT.test(m.desc) && d < primo) out.push({ d, imp, tipo: "uscita", cat: "_revolut", nome: /satispay/i.test(m.desc) ? "Ricarica Satispay" : "Ricarica Revolut" });
         continue;
       }
       out.push({ d, imp, tipo: "uscita", cat: catMov(m), sub: m.cat === "_fisse" ? nome : null, nome, mov: m });
@@ -2006,7 +2039,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     const mie = new Map(E.mov.map(m => [m.id, m]));
     const tutti = new Map(rem.mov.map(m => [m.id, m])); for (const [id2, m] of mie) tutti.set(id2, m);
     const extra = E.mov.some(m => !rem.mov.some(r => r.id === m.id));
-    E = { ...rem, ...E, mov: [...tutti.values()], conti: { ...rem.conti, ...E.conti }, mappe: { ...(rem.mappe || {}), ...(E.mappe || {}) }, _rev: (E._rev || 0) + 1 };
+    E = { ...rem, ...E, mov: [...tutti.values()], conti: { ...rem.conti, ...E.conti }, mappe: { ...(rem.mappe || {}), ...(E.mappe || {}) }, nomi: E.nomi?.length ? E.nomi : (rem.nomi || []), _rev: (E._rev || 0) + 1 };
     if (extra) queueE();
   }
   function queueE() { eDaInviare = true; clearTimeout(eTimer); eTimer = setTimeout(inviaEstratti, 1500); }
@@ -2016,7 +2049,7 @@ table.ed input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--a
     eInviando = true; eDaInviare = false;
     try {
       const id = await trovaGistE(true);
-      const o = await cifra({ mov: E.mov, conti: E.conti, mappe: E.mappe || {} });
+      const o = await cifra({ mov: E.mov, conti: E.conti, mappe: E.mappe || {}, nomi: E.nomi || [] });
       await gh(`/gists/${id}`, { method: "PATCH", body: JSON.stringify({ files: { "estratti.json": { content: JSON.stringify(o) } } }) });
     } catch (e) { eDaInviare = true; toast("Estratti non salvati su GitHub", e.message + " · riprovo tra poco", "bad"); eTimer = setTimeout(inviaEstratti, 20000); }
     finally { eInviando = false; }
